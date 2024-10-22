@@ -1,0 +1,53 @@
+import boto3
+import json
+import logging
+
+# Initialize logging
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+def lambda_handler(event, context):
+    ec2_client = boto3.client('ec2')
+    config_client = boto3.client('config')
+    
+    # Assume compliant by default
+    compliance_status = "COMPLIANT"
+    
+    try:
+        # Extract the configuration item from the invokingEvent
+        config = json.loads(event['invokingEvent'])
+        configuration_item = config["configurationItem"]
+        
+        # Extract the instanceId
+        instance_id = configuration_item['configuration']['instanceId']
+        logger.info(f"Checking monitoring status for instance: {instance_id}")
+        
+        # Get complete Instance details
+        instance = ec2_client.describe_instances(InstanceIds=[instance_id])['Reservations'][0]['Instances'][0]
+        
+        # Check if detailed monitoring is enabled
+        if instance['Monitoring']['State'] != "enabled":
+            compliance_status = "NON_COMPLIANT"
+            logger.info(f"Instance {instance_id} is non-compliant: Detailed monitoring not enabled.")
+        
+        # Prepare evaluation result
+        evaluation = {
+            'ComplianceResourceType': 'AWS::EC2::Instance',
+            'ComplianceResourceId': instance_id,
+            'ComplianceType': compliance_status,
+            'Annotation': 'Detailed monitoring is not enabled.' if compliance_status == "NON_COMPLIANT" else 'Compliant.',
+            'OrderingTimestamp': config['notificationCreationTime']
+        }
+        
+        # Send the compliance result to AWS Config
+        response = config_client.put_evaluations(
+            Evaluations=[evaluation],
+            ResultToken=event['resultToken']
+        )
+        
+        logger.info(f"Compliance evaluation result: {response}")
+        return response
+    
+    except Exception as e:
+        logger.error(f"Error processing instance: {str(e)}")
+        raise
